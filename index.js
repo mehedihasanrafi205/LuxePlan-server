@@ -135,7 +135,71 @@ async function run() {
       }
     });
 
- 
+    // PAYMENT SUCCESS
+    app.patch("/payment-success", async (req, res) => {
+      try {
+        const { sessionId } = req.body;
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+        const transactionId = session.payment_intent;
+        const existingPayment = await paymentCollection.findOne({
+          transactionId,
+        });
+
+        if (existingPayment) {
+          return res.send({
+            message: "Payment already recorded",
+            success: true,
+            paymentInfo: existingPayment,
+          });
+        }
+
+        if (session.payment_status === "paid") {
+          const bookingId = session.metadata.bookingId;
+
+          await bookingsCollection.updateOne(
+            { _id: new ObjectId(bookingId) },
+            { $set: { paymentStatus: "paid" } }
+          );
+
+          const payment = {
+            amount: session.amount_total / 100,
+            currency: session.currency,
+            customer_email: session.customer_email,
+            serviceId: session.metadata.serviceId,
+            serviceName: session.metadata.service_name,
+            transactionId,
+            paymentStatus: session.payment_status,
+            paidAt: new Date(),
+          };
+
+          const paymentResult = await paymentCollection.insertOne(payment);
+          const insertedPayment = await paymentCollection.findOne({
+            _id: paymentResult.insertedId,
+          });
+
+          return res.send({ success: true, paymentInfo: insertedPayment });
+        }
+
+        res.send({ success: false });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ success: false, error: err.message });
+      }
+    });
+
+    // GET PAYMENTS
+    app.get("/payments", async (req, res) => {
+      const { email } = req.query;
+      if (!email) return res.status(400).json({ message: "Email required" });
+
+      const payments = await paymentCollection
+        .find({ customer_email: email })
+        .sort({ paidAt: -1 })
+        .toArray();
+
+      res.send(payments);
+    });
   } catch (err) {
     console.error("Server Error:", err);
   }
