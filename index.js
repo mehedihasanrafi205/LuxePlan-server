@@ -97,7 +97,45 @@ async function run() {
       res.send(result);
     });
 
-   
+    // STRIPE CHECKOUT SESSION
+    app.post("/create-checkout-session", async (req, res) => {
+      try {
+        const info = req.body;
+        const session = await stripe.checkout.sessions.create({
+          line_items: [
+            {
+              price_data: {
+                currency: "BDT",
+                product_data: { name: info.service_name },
+                unit_amount: parseInt(info.cost) * 100,
+              },
+              quantity: 1,
+            },
+          ],
+          customer_email: info.email,
+          mode: "payment",
+          metadata: {
+            bookingId: info.bookingId,
+            serviceId: info.serviceId,
+            service_name: info.service_name,
+            email: info.email,
+            date: info.date,
+            time: info.time,
+            location: info.location,
+            cost: info.cost,
+          },
+          success_url: `${process.env.DOMAIN_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${process.env.DOMAIN_URL}/service/${info.serviceId}`,
+        });
+
+        res.send({ url: session.url });
+      } catch (err) {
+        console.error("Stripe Session Error:", err);
+        res.status(500).send({ error: "Failed to create payment session" });
+      }
+    });
+
+ 
   } catch (err) {
     console.error("Server Error:", err);
   }
