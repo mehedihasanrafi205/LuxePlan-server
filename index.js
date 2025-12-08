@@ -67,6 +67,36 @@ async function run() {
       res.send(result);
     });
 
+    // BOOKINGS
+    app.get("/bookings", async (req, res) => {
+      const { serviceId, date, email } = req.query;
+      const query = {};
+      if (serviceId) query.serviceId = serviceId;
+      if (date) query.date = date;
+      if (email) query.userEmail = email;
+
+      const bookings = await bookingsCollection.find(query).toArray();
+      res.json(bookings);
+    });
+
+    app.post("/bookings", async (req, res) => {
+      const booking = req.body;
+      booking.status = "pending";
+      booking.paymentStatus = "unpaid";
+      booking.createdAt = new Date();
+
+      const result = await bookingsCollection.insertOne(booking);
+      res.send(result);
+    });
+
+    app.delete("/bookings/:id", async (req, res) => {
+      const { id } = req.params;
+      const result = await bookingsCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+      res.send(result);
+    });
+
    
   } catch (err) {
     console.error("Server Error:", err);
