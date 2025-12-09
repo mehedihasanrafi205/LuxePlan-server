@@ -66,6 +66,24 @@ async function run() {
       const result = await serviceCollection.insertOne(req.body);
       res.send(result);
     });
+    app.delete("/service/:id", async (req, res) => {
+      const { id } = req.params;
+      const result = await serviceCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+      res.send(result);
+    });
+
+    app.put("/service/id", async (req, res) => {
+      const serviceId = req.params.id;
+      const updatedData = req.body;
+
+      const result = await servicesCollection.updateOne(
+        { _id: new ObjectId(serviceId) },
+        { $set: updatedData }
+      );
+      res.send(result);
+    });
 
     // BOOKINGS
     app.get("/bookings", async (req, res) => {
@@ -94,6 +112,17 @@ async function run() {
       const result = await bookingsCollection.deleteOne({
         _id: new ObjectId(id),
       });
+      res.send(result);
+    });
+
+    app.put("/bookings/:id", async (req, res) => {
+      const serviceId = req.params.id;
+      const updatedData = req.body;
+
+      const result = await servicesCollection.updateOne(
+        { _id: new ObjectId(serviceId) },
+        { $set: updatedData }
+      );
       res.send(result);
     });
 
