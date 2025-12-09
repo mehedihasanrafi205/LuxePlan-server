@@ -118,7 +118,6 @@ async function run() {
     app.put("/bookings/:id", async (req, res) => {
       const serviceId = req.params.id;
       const updatedData = req.body;
-
       const result = await servicesCollection.updateOne(
         { _id: new ObjectId(serviceId) },
         { $set: updatedData }
