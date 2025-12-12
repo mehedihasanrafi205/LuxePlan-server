@@ -1,4 +1,6 @@
 node_modules
 .env
-luxeplan-0-firebase-adminsdk-fbsvc-ad2c162e32.json
+luxeplan-0-firebase-adminsdk-fbsvc-6c0446b6a0.json
 serverKeycon.js
+vercel.json
+.vercel

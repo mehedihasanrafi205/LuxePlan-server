@@ -6,7 +6,7 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const admin = require("firebase-admin");
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 4000;
 
 // Firebase Admin setup
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
@@ -20,12 +20,22 @@ admin.initializeApp({
 
 // Middleware
 app.use(express.json());
-app.use(
-  cors({
-    origin: process.env.DOMAIN_URL,
-    credentials: true,
-  })
-);
+app.use(cors({ origin: process.env.DOMAIN_URL, credentials: true }));
+
+// JWT Middleware
+const verifyFBToken = async (req, res, next) => {
+  const token = req?.headers?.authorization?.split(" ")[1];
+  if (!token) return res.status(401).send({ message: "Unauthorized Access!" });
+
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+    req.tokenEmail = decoded.email;
+    next();
+  } catch (err) {
+    console.error("Firebase verify error:", err);
+    return res.status(401).send({ message: "Unauthorized Access!", err });
+  }
+};
 
 // MongoDB connection
 const client = new MongoClient(process.env.URI, {
@@ -39,19 +49,121 @@ async function run() {
     const serviceCollection = db.collection("service");
     const bookingsCollection = db.collection("bookings");
     const paymentCollection = db.collection("payments");
+    const decoratorCollection = db.collection("decorator");
 
     console.log("Connected to MongoDB!");
 
-    // USERS
-    app.get("/users", async (req, res) => {
-      const users = await usersCollection.find().toArray();
-      res.send(users);
+    // Role Middleware //
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.tokenEmail;
+      if (!email)
+        return res.status(401).send({ message: "Unauthorized Access!" });
+
+      const user = await usersCollection.findOne({ email });
+
+      if (user.role !== "admin") {
+        return res
+          .status(403)
+          .send({ message: "Admin only actions", role: user?.role });
+      }
+
+      next();
+    };
+    const verifyDecorator = async (req, res, next) => {
+      const email = req.tokenEmail;
+      if (!email)
+        return res.status(401).send({ message: "Unauthorized Access!" });
+
+      const user = await usersCollection.findOne({ email });
+
+      if (user.role !== "decorator") {
+        return res
+          .status(403)
+          .send({ message: "Decorators only actions", role: user?.role });
+      }
+
+      next();
+    };
+
+    // ====== USERS ======
+
+    app.get("/users", verifyFBToken, verifyAdmin, async (req, res) => {
+      const adminEmail = req.tokenEmail;
+      const result = await usersCollection
+        .find({ email: { $ne: adminEmail } })
+        .toArray();
+      res.send(result);
     });
 
-    // SERVICES
+    app.post("/users", async (req, res) => {
+      const userData = req.body;
+      const now = new Date().toISOString();
+      userData.createdAt = now;
+      userData.lastLogin = now;
+      userData.role = "client";
+
+      const query = { email: userData.email };
+      const alreadyExist = await usersCollection.findOne(query);
+
+      if (alreadyExist) {
+        const result = await usersCollection.updateOne(query, {
+          $set: { lastLogin: now },
+        });
+        return res.send(result);
+      }
+
+      const result = await usersCollection.insertOne(userData);
+      res.send(result);
+    });
+
+    app.patch("/users/:id", verifyFBToken, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const { role } = req.body;
+
+      const filter = { _id: new ObjectId(id) };
+      const update = { $set: { role: role } };
+
+      const result = await usersCollection.updateOne(filter, update);
+      res.send(result);
+    });
+
+    app.get("/user/role", verifyFBToken, async (req, res) => {
+      const user = await usersCollection.findOne({ email: req.tokenEmail });
+      res.send({ role: user?.role || "client" });
+    });
+
+    // ====== SERVICES ======
     app.get("/services", async (req, res) => {
-      const services = await serviceCollection.find().toArray();
+      const { search, category, minBudget, maxBudget } = req.query;
+
+      const query = {};
+
+      if (search) {
+        query.service_name = { $regex: search, $options: "i" };
+      }
+
+      if (category && category !== "all") {
+        query.service_category = category;
+      }
+
+      if (minBudget || maxBudget) {
+        query.cost = {};
+        if (minBudget) query.cost.$gte = parseFloat(minBudget);
+        if (maxBudget) query.cost.$lte = parseFloat(maxBudget);
+      }
+
+      const services = await serviceCollection.find(query).toArray();
       res.send(services);
+    });
+
+    app.get("/services/top-rated", async (req, res) => {
+      const topServices = await serviceCollection
+        .find()
+        .sort({ ratings: -1 })
+        .limit(4)
+        .toArray();
+
+      res.send(topServices);
     });
 
     app.get("/service/:id", async (req, res) => {
@@ -62,11 +174,22 @@ async function run() {
       res.send(service);
     });
 
-    app.post("/service", async (req, res) => {
+    app.post("/service", verifyFBToken, async (req, res) => {
       const result = await serviceCollection.insertOne(req.body);
       res.send(result);
     });
-    app.delete("/service/:id", async (req, res) => {
+
+    app.put("/service/:id", verifyFBToken, verifyAdmin, async (req, res) => {
+      const { id } = req.params;
+      const updatedData = req.body;
+      const result = await serviceCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updatedData }
+      );
+      res.send(result);
+    });
+
+    app.delete("/service/:id", verifyFBToken, verifyAdmin, async (req, res) => {
       const { id } = req.params;
       const result = await serviceCollection.deleteOne({
         _id: new ObjectId(id),
@@ -74,27 +197,19 @@ async function run() {
       res.send(result);
     });
 
-    app.put("/service/id", async (req, res) => {
-      const serviceId = req.params.id;
-      const updatedData = req.body;
-
-      const result = await servicesCollection.updateOne(
-        { _id: new ObjectId(serviceId) },
-        { $set: updatedData }
-      );
-      res.send(result);
-    });
-
-    // BOOKINGS
-    app.get("/bookings", async (req, res) => {
+    // ====== BOOKINGS ======
+    app.get("/bookings", verifyFBToken, async (req, res) => {
       const { serviceId, date, email } = req.query;
       const query = {};
       if (serviceId) query.serviceId = serviceId;
       if (date) query.date = date;
       if (email) query.userEmail = email;
 
-      const bookings = await bookingsCollection.find(query).toArray();
-      res.json(bookings);
+      const bookings = await bookingsCollection
+        .find(query)
+        .sort({ createdAt: -1 })
+        .toArray();
+      res.send(bookings);
     });
 
     app.post("/bookings", async (req, res) => {
@@ -107,6 +222,98 @@ async function run() {
       res.send(result);
     });
 
+    app.get(
+      "/bookings/assigned",
+      verifyFBToken,
+      verifyDecorator,
+      async (req, res) => {
+        const { decoratorEmail, status } = req.query;
+        const query = {};
+        if (decoratorEmail) {
+          query.decoratorEmail = decoratorEmail;
+        }
+        if (status !== "parcel-delivered") {
+          query.status = { $nin: ["completed"] };
+        } else {
+          query.status = status;
+        }
+
+        const cursor = bookingsCollection.find(query);
+
+        const result = await cursor.toArray();
+        res.send(result);
+      }
+    );
+
+    app.patch(
+      "/bookings/:id/assigned",
+      verifyFBToken,
+      verifyDecorator,
+      async (req, res) => {
+        const { id } = req.params;
+        const { status, decoratorId } = req.body;
+
+        const query = { _id: new ObjectId(id) };
+
+        // Update booking status + decoratorId
+        const updatedDoc = {
+          $set: {
+            status,
+            decoratorId,
+          },
+        };
+
+        // First update booking
+        const result = await bookingsCollection.updateOne(query, updatedDoc);
+
+        // ---- Update Decorator Work Status ----
+        const decoratorQuery = { _id: new ObjectId(decoratorId) };
+        let decoratorUpdatedDoc = null;
+
+        if (status === "planning") {
+          decoratorUpdatedDoc = { $set: { workStatus: "working" } };
+        }
+
+        if (status === "completed") {
+          decoratorUpdatedDoc = { $set: { workStatus: "available" } };
+        }
+
+        // Only update decorator if needed
+        if (decoratorUpdatedDoc) {
+          await decoratorCollection.updateOne(
+            decoratorQuery,
+            decoratorUpdatedDoc
+          );
+        }
+
+        res.send({ success: true, result });
+      }
+    );
+
+    app.get("/booking/completed", async (req, res) => {
+      const { decoratorEmail } = req.query;
+
+      const query = {
+        decoratorEmail,
+        status: "completed",
+      };
+
+      const cursor = bookingsCollection.find(query).sort({ date: -1 });
+      const result = await cursor.toArray();
+
+      res.send(result);
+    });
+
+    app.put("/bookings/:id", async (req, res) => {
+      const { id } = req.params;
+      const updatedData = req.body;
+      const result = await bookingsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updatedData }
+      );
+      res.send(result);
+    });
+
     app.delete("/bookings/:id", async (req, res) => {
       const { id } = req.params;
       const result = await bookingsCollection.deleteOne({
@@ -115,17 +322,35 @@ async function run() {
       res.send(result);
     });
 
-    app.put("/bookings/:id", async (req, res) => {
-      const serviceId = req.params.id;
-      const updatedData = req.body;
-      const result = await servicesCollection.updateOne(
-        { _id: new ObjectId(serviceId) },
-        { $set: updatedData }
+    app.patch("/bookings/:id/assign", async (req, res) => {
+      const bookingId = req.params.id;
+      const { decoratorEmail, decoratorName, decoratorId } = req.body;
+      const query = { _id: new ObjectId(bookingId) };
+      const updatedDoc = {
+        $set: {
+          status: "assigned",
+          decoratorId: decoratorId,
+          decoratorName: decoratorName,
+          decoratorEmail: decoratorEmail,
+        },
+      };
+      const result = await bookingsCollection.updateOne(query, updatedDoc);
+
+      // decorator info
+      const decoratorQuery = { _id: new ObjectId(decoratorId) };
+      const decoratorUpdatedDoc = {
+        $set: {
+          workStatus: "assigned",
+        },
+      };
+      decoratorResult = await decoratorCollection.updateOne(
+        decoratorQuery,
+        decoratorUpdatedDoc
       );
-      res.send(result);
+      res.send(decoratorResult);
     });
 
-    // STRIPE CHECKOUT SESSION
+    // ====== STRIPE CHECKOUT ======
     app.post("/create-checkout-session", async (req, res) => {
       try {
         const info = req.body;
@@ -140,13 +365,13 @@ async function run() {
               quantity: 1,
             },
           ],
-          customer_email: info.email,
+          customer_email: info.userEmail,
           mode: "payment",
           metadata: {
             bookingId: info.bookingId,
             serviceId: info.serviceId,
             service_name: info.service_name,
-            email: info.email,
+            email: info.userEmail,
             date: info.date,
             time: info.time,
             location: info.location,
@@ -163,7 +388,7 @@ async function run() {
       }
     });
 
-    // PAYMENT SUCCESS
+    // ====== PAYMENT SUCCESS ======
     app.patch("/payment-success", async (req, res) => {
       try {
         const { sessionId } = req.body;
@@ -175,11 +400,7 @@ async function run() {
         });
 
         if (existingPayment) {
-          return res.send({
-            message: "Payment already recorded",
-            success: true,
-            paymentInfo: existingPayment,
-          });
+          return res.send({ success: true, paymentInfo: existingPayment });
         }
 
         if (session.payment_status === "paid") {
@@ -216,10 +437,9 @@ async function run() {
       }
     });
 
-    // GET PAYMENTS
-    app.get("/payments", async (req, res) => {
+    // ====== GET PAYMENTS ======
+    app.get("/payments", verifyFBToken, async (req, res) => {
       const { email } = req.query;
-      if (!email) return res.status(400).json({ message: "Email required" });
 
       const payments = await paymentCollection
         .find({ customer_email: email })
@@ -227,6 +447,120 @@ async function run() {
         .toArray();
 
       res.send(payments);
+    });
+
+    //  DECORATOR
+    app.post("/decorator", verifyFBToken, async (req, res) => {
+      try {
+        const decorator = req.body;
+        const email = decorator.email;
+
+        decorator.status = "pending";
+        decorator.createdAt = new Date();
+
+        const alreadyExist = await decoratorCollection.findOne({ email });
+        console.log("alreadyExist:", alreadyExist);
+        if (alreadyExist) {
+          return res.status(409).json({ message: "Already Applied" });
+        }
+
+        const result = await decoratorCollection.insertOne(decorator);
+        res.status(201).json(result);
+      } catch (error) {
+        console.error("Error saving decorator:", error);
+        res.status(500).json({ message: "Internal Server Error" });
+      }
+    });
+
+    app.get("/decorators", async (req, res) => {
+      const { status, workStatus } = req.query;
+
+      const filter = {};
+
+      if (status) {
+        filter.status = status;
+      }
+
+      if (workStatus) {
+        const workStatusArray = workStatus.split(",");
+        filter.workStatus = { $in: workStatusArray };
+      }
+
+      const decorators = await decoratorCollection.find(filter).toArray();
+      res.send(decorators);
+    });
+
+    app.get("/decorators/top-rated", async (req, res) => {
+      const topDecorators = await decoratorCollection
+        .find()
+        .sort({ ratings: -1 })
+        .limit(4)
+        .toArray();
+
+      res.send(topDecorators);
+    });
+
+    app.get("/decorator/:id", async (req, res) => {
+      const id = req.params.id;
+
+      const objectId = new ObjectId(id);
+
+      const decorator = await decoratorCollection.findOne({ _id: objectId });
+
+      res.send(decorator);
+    });
+
+    app.patch(
+      "/decorators/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { status } = req.body;
+        const id = req.params.id;
+
+        const query = { _id: new ObjectId(id) };
+        const updatedDoc = {
+          $set: { status: status, workStatus: "available" },
+        };
+
+        await decoratorCollection.updateOne(query, updatedDoc);
+
+        const updatedDecorator = await decoratorCollection.findOne(query);
+
+        if (status === "accepted" && updatedDecorator?.email) {
+          await usersCollection.updateOne(
+            { email: updatedDecorator.email },
+            { $set: { role: "decorator" } }
+          );
+        }
+
+        res.status(200).json(updatedDecorator);
+      }
+    );
+
+    
+
+    app.get("/bookings/today", async (req, res) => {
+      const { decoratorEmail } = req.query;
+      if (!decoratorEmail)
+        return res.status(400).send({ message: "Decorator email required" });
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); // start of day
+      const tomorrow = new Date(today);
+      tomorrow.setDate(today.getDate() + 1); // start of next day
+
+      const query = {
+        decoratorEmail,
+        date: { $gte: today.toISOString(), $lt: tomorrow.toISOString() },
+        status: { $ne: "completed" },
+      };
+
+      const projects = await bookingsCollection
+        .find(query)
+        .sort({ time: 1 })
+        .toArray();
+      res.send(projects);
     });
   } catch (err) {
     console.error("Server Error:", err);
