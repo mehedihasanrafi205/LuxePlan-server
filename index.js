@@ -614,12 +614,12 @@ async function run() {
       async (req, res) => {
         try {
           const pipeline = [
-            { $match: { paymentStatus: "paid" } }, 
+            { $match: { paymentStatus: "paid" } },
             {
               $group: {
-                _id: "$service_name", 
-                totalRevenue: { $sum: "$amount" }, 
-                count: { $sum: 1 }, 
+                _id: "$service_name",
+                totalRevenue: { $sum: "$amount" },
+                count: { $sum: 1 },
               },
             },
             {
@@ -691,7 +691,24 @@ async function run() {
       }
     );
 
-   
+    // user
+    app.get("/dashboard/user/bookings", verifyFBToken, async (req, res) => {
+      const email = req.tokenEmail;
+      const bookings = await bookingsCollection
+        .find({ userEmail: email })
+        .sort({ date: -1 })
+        .toArray();
+      res.send(bookings);
+    });
+
+    app.get("/dashboard/user/payments", verifyFBToken, async (req, res) => {
+      const email = req.tokenEmail;
+      const payments = await paymentCollection
+        .find({ customer_email: email })
+        .sort({ paidAt: -1 })
+        .toArray();
+      res.send(payments);
+    });
   } catch (err) {
     console.error("Server Error:", err);
   }
