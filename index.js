@@ -373,24 +373,6 @@ async function run() {
       res.send(projects);
     });
 
-    app.get("/bookings/status/stats", async (req, res) => {
-      const pipeline = [
-        {
-          $group: {
-            _id: "$status",
-            count: { $sum: 1 },
-          },
-        },
-        {
-          $project: {
-            status: "$_id",
-            count: 1,
-          },
-        },
-      ];
-      const result = await bookingsCollection.aggregate(pipeline).toArray();
-      res.send(result);
-    });
 
     // ====== STRIPE CHECKOUT ======
     app.post("/create-checkout-session", async (req, res) => {
@@ -579,6 +561,82 @@ async function run() {
         res.status(200).json(updatedDecorator);
       }
     );
+
+    // Get bookings count by status
+    app.get(
+      "/dashboard/admin/bookings-status",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const pipeline = [
+          { $group: { _id: "$status", count: { $sum: 1 } } },
+          { $project: { status: "$_id", count: 1, _id: 0 } },
+        ];
+        const stats = await bookingsCollection.aggregate(pipeline).toArray();
+        res.send(stats);
+      }
+    );
+
+    // Get total revenue
+    app.get(
+      "/dashboard/admin/revenue",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const pipeline = [
+          { $match: { paymentStatus: "paid" } },
+          { $group: { _id: null, totalRevenue: { $sum: "$amount" } } },
+        ];
+        const revenue = await paymentCollection.aggregate(pipeline).toArray();
+        res.send(revenue[0] || { totalRevenue: 0 });
+      }
+    );
+
+    // Services demand histogram
+    app.get(
+      "/dashboard/admin/services-demand",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const pipeline = [
+          { $group: { _id: "$service_name", count: { $sum: 1 } } },
+          { $project: { service: "$_id", count: 1, _id: 0 } },
+        ];
+        const result = await bookingsCollection.aggregate(pipeline).toArray();
+        res.send(result);
+      }
+    );
+
+    // Get revenue by service
+    app.get(
+      "/dashboard/admin/revenue-by-service",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const pipeline = [
+            { $match: { paymentStatus: "paid" } }, // Only consider paid bookings
+            {
+              $group: {
+                _id: "$service_name", // Group by service
+                totalRevenue: { $sum: "$amount" }, // Sum the revenue per service
+                count: { $sum: 1 }, // Optional: count of bookings per service
+              },
+            },
+            {
+              $project: { service: "$_id", totalRevenue: 1, count: 1, _id: 0 },
+            },
+          ];
+
+          const result = await bookingsCollection.aggregate(pipeline).toArray();
+          res.send(result);
+        } catch (err) {
+          console.error("Revenue by service error:", err);
+          res.status(500).send({ error: "Failed to fetch revenue by service" });
+        }
+      }
+    );
+
     
   } catch (err) {
     console.error("Server Error:", err);
