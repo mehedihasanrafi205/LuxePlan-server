@@ -373,7 +373,6 @@ async function run() {
       res.send(projects);
     });
 
-
     // ====== STRIPE CHECKOUT ======
     app.post("/create-checkout-session", async (req, res) => {
       try {
@@ -615,12 +614,12 @@ async function run() {
       async (req, res) => {
         try {
           const pipeline = [
-            { $match: { paymentStatus: "paid" } }, // Only consider paid bookings
+            { $match: { paymentStatus: "paid" } }, 
             {
               $group: {
-                _id: "$service_name", // Group by service
-                totalRevenue: { $sum: "$amount" }, // Sum the revenue per service
-                count: { $sum: 1 }, // Optional: count of bookings per service
+                _id: "$service_name", 
+                totalRevenue: { $sum: "$amount" }, 
+                count: { $sum: 1 }, 
               },
             },
             {
@@ -636,8 +635,63 @@ async function run() {
         }
       }
     );
+    // Decorator assigned projects
+    app.get(
+      "/dashboard/decorator/projects",
+      verifyFBToken,
+      verifyDecorator,
+      async (req, res) => {
+        const email = req.tokenEmail;
+        const projects = await bookingsCollection
+          .find({ decoratorEmail: email })
+          .sort({ date: 1 })
+          .toArray();
+        res.send(projects);
+      }
+    );
 
-    
+    // Decorator today's schedule
+    app.get(
+      "/dashboard/decorator/today",
+      verifyFBToken,
+      verifyDecorator,
+      async (req, res) => {
+        const email = req.tokenEmail;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(today.getDate() + 1);
+
+        const schedule = await bookingsCollection
+          .find({
+            decoratorEmail: email,
+            date: { $gte: today.toISOString(), $lt: tomorrow.toISOString() },
+            status: { $ne: "completed" },
+          })
+          .sort({ time: 1 })
+          .toArray();
+
+        res.send(schedule);
+      }
+    );
+
+    // Decorator earnings
+    app.get(
+      "/dashboard/decorator/earnings",
+      verifyFBToken,
+      verifyDecorator,
+      async (req, res) => {
+        const email = req.tokenEmail;
+        const pipeline = [
+          { $match: { decoratorEmail: email, paymentStatus: "paid" } },
+          { $group: { _id: null, totalEarnings: { $sum: "$cost" } } },
+        ];
+        const earnings = await bookingsCollection.aggregate(pipeline).toArray();
+        res.send(earnings[0] || { totalEarnings: 0 });
+      }
+    );
+
+   
   } catch (err) {
     console.error("Server Error:", err);
   }
