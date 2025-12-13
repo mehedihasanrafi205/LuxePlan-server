@@ -350,6 +350,48 @@ async function run() {
       res.send(decoratorResult);
     });
 
+    app.get("/bookings/today", async (req, res) => {
+      const { decoratorEmail } = req.query;
+      if (!decoratorEmail)
+        return res.status(400).send({ message: "Decorator email required" });
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); // start of day
+      const tomorrow = new Date(today);
+      tomorrow.setDate(today.getDate() + 1); // start of next day
+
+      const query = {
+        decoratorEmail,
+        date: { $gte: today.toISOString(), $lt: tomorrow.toISOString() },
+        status: { $ne: "completed" },
+      };
+
+      const projects = await bookingsCollection
+        .find(query)
+        .sort({ time: 1 })
+        .toArray();
+      res.send(projects);
+    });
+
+    app.get("/bookings/status/stats", async (req, res) => {
+      const pipeline = [
+        {
+          $group: {
+            _id: "$status",
+            count: { $sum: 1 },
+          },
+        },
+        {
+          $project: {
+            status: "$_id",
+            count: 1,
+          },
+        },
+      ];
+      const result = await bookingsCollection.aggregate(pipeline).toArray();
+      res.send(result);
+    });
+
     // ====== STRIPE CHECKOUT ======
     app.post("/create-checkout-session", async (req, res) => {
       try {
@@ -537,31 +579,7 @@ async function run() {
         res.status(200).json(updatedDecorator);
       }
     );
-
     
-
-    app.get("/bookings/today", async (req, res) => {
-      const { decoratorEmail } = req.query;
-      if (!decoratorEmail)
-        return res.status(400).send({ message: "Decorator email required" });
-
-      const today = new Date();
-      today.setHours(0, 0, 0, 0); // start of day
-      const tomorrow = new Date(today);
-      tomorrow.setDate(today.getDate() + 1); // start of next day
-
-      const query = {
-        decoratorEmail,
-        date: { $gte: today.toISOString(), $lt: tomorrow.toISOString() },
-        status: { $ne: "completed" },
-      };
-
-      const projects = await bookingsCollection
-        .find(query)
-        .sort({ time: 1 })
-        .toArray();
-      res.send(projects);
-    });
   } catch (err) {
     console.error("Server Error:", err);
   }
