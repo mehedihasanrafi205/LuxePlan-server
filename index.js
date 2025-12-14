@@ -94,10 +94,27 @@ async function run() {
 
     app.get("/users", verifyFBToken, verifyAdmin, async (req, res) => {
       const adminEmail = req.tokenEmail;
-      const result = await usersCollection
-        .find({ email: { $ne: adminEmail } })
-        .toArray();
-      res.send(result);
+
+      const page = parseInt(req.query.page) || 1;
+      const size = parseInt(req.query.size) || 10;
+      const skip = (page - 1) * size;
+
+      const query = { email: { $ne: adminEmail } };
+
+      try {
+        const count = await usersCollection.countDocuments(query);
+
+        const users = await usersCollection
+          .find(query)
+          .skip(skip)
+          .limit(size)
+          .toArray();
+
+        res.send({ users, count });
+      } catch (error) {
+        console.error("Error fetching users:", error);
+        res.status(500).send({ message: "Failed to fetch users" });
+      }
     });
 
     app.post("/users", async (req, res) => {
