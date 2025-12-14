@@ -20,7 +20,12 @@ admin.initializeApp({
 
 // Middleware
 app.use(express.json());
-app.use(cors({ origin: process.env.DOMAIN_URL, credentials: true }));
+app.use(
+  cors({
+    origin: [process.env.DOMAIN_URL, "http://localhost:5173"],
+    credentials: true,
+  })
+);
 
 // JWT Middleware
 const verifyFBToken = async (req, res, next) => {
@@ -133,11 +138,18 @@ async function run() {
     });
 
     // ====== SERVICES ======
+
     app.get("/services", async (req, res) => {
       const { search, category, minBudget, maxBudget } = req.query;
 
+      // ⬇️ ADD PAGINATION PARAMETERS
+      const page = parseInt(req.query.page) || 1;
+      const size = parseInt(req.query.size) || 9;
+      const skip = (page - 1) * size;
+
       const query = {};
 
+      // Apply filtering logic (Unchanged)
       if (search) {
         query.service_name = { $regex: search, $options: "i" };
       }
@@ -152,8 +164,20 @@ async function run() {
         if (maxBudget) query.cost.$lte = parseFloat(maxBudget);
       }
 
-      const services = await serviceCollection.find(query).toArray();
-      res.send(services);
+      try {
+        const count = await serviceCollection.countDocuments(query);
+
+        const services = await serviceCollection
+          .find(query)
+          .skip(skip)
+          .limit(size)
+          .toArray();
+
+        res.send({ services, count });
+      } catch (error) {
+        console.error("Error fetching services:", error);
+        res.status(500).send({ message: "Failed to fetch services" });
+      }
     });
 
     app.get("/services/top-rated", async (req, res) => {
