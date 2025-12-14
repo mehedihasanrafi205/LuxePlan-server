@@ -96,7 +96,7 @@ async function run() {
       const adminEmail = req.tokenEmail;
 
       const page = parseInt(req.query.page) || 1;
-      const size = parseInt(req.query.size) || 10;
+      const size = parseInt(req.query.size) || 9;
       const skip = (page - 1) * size;
 
       const query = { email: { $ne: adminEmail } };
@@ -159,14 +159,12 @@ async function run() {
     app.get("/services", async (req, res) => {
       const { search, category, minBudget, maxBudget } = req.query;
 
-      // ⬇️ ADD PAGINATION PARAMETERS
       const page = parseInt(req.query.page) || 1;
       const size = parseInt(req.query.size) || 9;
       const skip = (page - 1) * size;
 
       const query = {};
 
-      // Apply filtering logic (Unchanged)
       if (search) {
         query.service_name = { $regex: search, $options: "i" };
       }
@@ -238,19 +236,33 @@ async function run() {
       res.send(result);
     });
 
-    // ====== BOOKINGS ======
+    // BOOKINGS
     app.get("/bookings", verifyFBToken, async (req, res) => {
       const { serviceId, date, email } = req.query;
+      const page = parseInt(req.query.page) || 1;
+      const size = parseInt(req.query.size) || 9;
+      const skip = (page - 1) * size;
+
       const query = {};
       if (serviceId) query.serviceId = serviceId;
       if (date) query.date = date;
       if (email) query.userEmail = email;
 
-      const bookings = await bookingsCollection
-        .find(query)
-        .sort({ createdAt: -1 })
-        .toArray();
-      res.send(bookings);
+      try {
+        const count = await bookingsCollection.countDocuments(query);
+
+        const bookings = await bookingsCollection
+          .find(query)
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(size)
+          .toArray();
+
+        res.send({ bookings, count });
+      } catch (error) {
+        console.error("Error fetching bookings:", error);
+        res.status(500).send({ message: "Failed to fetch bookings" });
+      }
     });
 
     app.post("/bookings", async (req, res) => {
@@ -268,21 +280,38 @@ async function run() {
       verifyFBToken,
       verifyDecorator,
       async (req, res) => {
-        const { decoratorEmail, status } = req.query;
+        const { decoratorEmail, page, size } = req.query;
+
+        const pageNumber = parseInt(page) || 1;
+        const pageSize = parseInt(size) || 9;
+        const skip = (pageNumber - 1) * pageSize;
+
         const query = {};
         if (decoratorEmail) {
           query.decoratorEmail = decoratorEmail;
         }
-        if (status !== "parcel-delivered") {
-          query.status = { $nin: ["completed"] };
-        } else {
-          query.status = status;
+
+        query.status = { $nin: ["completed"] };
+
+        try {
+          const totalCount = await bookingsCollection.countDocuments(query);
+
+          const bookings = await bookingsCollection
+            .find(query)
+            .skip(skip)
+            .limit(pageSize)
+            .toArray();
+
+          res.send({
+            projects: bookings,
+            count: totalCount,
+          });
+        } catch (error) {
+          console.error("Error fetching assigned bookings:", error);
+          res
+            .status(500)
+            .send({ message: "Failed to fetch assigned projects." });
         }
-
-        const cursor = bookingsCollection.find(query);
-
-        const result = await cursor.toArray();
-        res.send(result);
       }
     );
 
@@ -296,7 +325,6 @@ async function run() {
 
         const query = { _id: new ObjectId(id) };
 
-        // Update booking status + decoratorId
         const updatedDoc = {
           $set: {
             status,
@@ -304,10 +332,8 @@ async function run() {
           },
         };
 
-        // First update booking
         const result = await bookingsCollection.updateOne(query, updatedDoc);
 
-        // ---- Update Decorator Work Status ----
         const decoratorQuery = { _id: new ObjectId(decoratorId) };
         let decoratorUpdatedDoc = null;
 
@@ -319,7 +345,6 @@ async function run() {
           decoratorUpdatedDoc = { $set: { workStatus: "available" } };
         }
 
-        // Only update decorator if needed
         if (decoratorUpdatedDoc) {
           await decoratorCollection.updateOne(
             decoratorQuery,
@@ -332,17 +357,50 @@ async function run() {
     );
 
     app.get("/booking/completed", async (req, res) => {
-      const { decoratorEmail } = req.query;
+      const { decoratorEmail, page, size } = req.query;
+
+      if (!decoratorEmail) {
+        return res.status(400).send({ message: "Decorator email required" });
+      }
+
+      const pageNumber = parseInt(page) || 1;
+      const pageSize = parseInt(size) || 9;
+      const skip = (pageNumber - 1) * pageSize;
 
       const query = {
         decoratorEmail,
         status: "completed",
       };
 
-      const cursor = bookingsCollection.find(query).sort({ date: -1 });
-      const result = await cursor.toArray();
+      try {
+        const totalCount = await bookingsCollection.countDocuments(query);
 
-      res.send(result);
+        const projects = await bookingsCollection
+          .find(query)
+          .sort({ date: -1 })
+          .skip(skip)
+          .limit(pageSize)
+          .toArray();
+
+        const allCompletedProjects = await bookingsCollection
+          .find(query)
+          .project({ cost: 1 })
+          .toArray();
+
+        const totalEarnings = allCompletedProjects.reduce(
+          (sum, project) => sum + project.cost,
+          0
+        );
+
+        res.send({
+          projects: projects,
+          count: totalCount,
+          totalEarnings: totalEarnings,
+        });
+      } catch (error) {
+        console.error("Error fetching completed projects:", error);
+        res.status(500).send({ message: "Failed to fetch earnings data." });
+      }
     });
 
     app.put("/bookings/:id", async (req, res) => {
@@ -392,9 +450,13 @@ async function run() {
     });
 
     app.get("/bookings/today", async (req, res) => {
-      const { decoratorEmail } = req.query;
+      const { decoratorEmail, page, size } = req.query;
       if (!decoratorEmail)
         return res.status(400).send({ message: "Decorator email required" });
+
+      const pageNumber = parseInt(page) || 1;
+      const pageSize = parseInt(size) || 9;
+      const skip = (pageNumber - 1) * pageSize;
 
       const today = new Date();
       today.setHours(0, 0, 0, 0); // start of day
@@ -407,11 +469,24 @@ async function run() {
         status: { $ne: "completed" },
       };
 
-      const projects = await bookingsCollection
-        .find(query)
-        .sort({ time: 1 })
-        .toArray();
-      res.send(projects);
+      try {
+        const totalCount = await bookingsCollection.countDocuments(query);
+
+        const projects = await bookingsCollection
+          .find(query)
+          .sort({ time: 1 })
+          .skip(skip)
+          .limit(pageSize)
+          .toArray();
+
+        res.send({
+          projects: projects,
+          count: totalCount,
+        });
+      } catch (error) {
+        console.error("Error fetching today's schedule:", error);
+        res.status(500).send({ message: "Failed to fetch today's schedule." });
+      }
     });
 
     // ====== STRIPE CHECKOUT ======
@@ -501,16 +576,35 @@ async function run() {
       }
     });
 
-    // ====== GET PAYMENTS ======
+    //  GET PAYMENTS
+
     app.get("/payments", verifyFBToken, async (req, res) => {
-      const { email } = req.query;
+      const { email, page, size } = req.query; //
 
-      const payments = await paymentCollection
-        .find({ customer_email: email })
-        .sort({ paidAt: -1 })
-        .toArray();
+      const pageNumber = parseInt(page) || 1;
+      const pageSize = parseInt(size) || 9;
+      const skip = (pageNumber - 1) * pageSize;
 
-      res.send(payments);
+      const query = { customer_email: email };
+
+      try {
+        const totalCount = await paymentCollection.countDocuments(query);
+
+        const payments = await paymentCollection
+          .find(query)
+          .sort({ paidAt: -1 })
+          .skip(skip)
+          .limit(pageSize)
+          .toArray();
+
+        res.send({
+          payments: payments,
+          count: totalCount,
+        });
+      } catch (error) {
+        console.error("Error fetching payment history:", error);
+        res.status(500).send({ message: "Failed to fetch payment history." });
+      }
     });
 
     //  DECORATOR
@@ -539,6 +633,10 @@ async function run() {
     app.get("/decorators", async (req, res) => {
       const { status, workStatus } = req.query;
 
+      const page = parseInt(req.query.page) || 1;
+      const size = parseInt(req.query.size) || 9;
+      const skip = (page - 1) * size;
+
       const filter = {};
 
       if (status) {
@@ -550,8 +648,20 @@ async function run() {
         filter.workStatus = { $in: workStatusArray };
       }
 
-      const decorators = await decoratorCollection.find(filter).toArray();
-      res.send(decorators);
+      try {
+        const count = await decoratorCollection.countDocuments(filter);
+
+        const decorators = await decoratorCollection
+          .find(filter)
+          .skip(skip)
+          .limit(size)
+          .toArray();
+
+        res.send({ decorators, count });
+      } catch (error) {
+        console.error("Error fetching decorators:", error);
+        res.status(500).send({ message: "Failed to fetch decorators" });
+      }
     });
 
     app.get("/decorators/top-rated", async (req, res) => {
