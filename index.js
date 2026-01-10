@@ -9,6 +9,14 @@ const { sendSMS } = require("./utils/smsSender");
 const app = express();
 const port = process.env.PORT || 4000;
 
+// Environment Validation
+const requiredEnv = ["URI", "STRIPE_SECRET_KEY", "FB_SERVICE_KEY"];
+const missingEnv = requiredEnv.filter((key) => !process.env[key]);
+if (missingEnv.length > 0) {
+  console.error(`ERROR: Missing required environment variables: ${missingEnv.join(", ")}`);
+  process.exit(1);
+}
+
 // Firebase Admin setup
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
   "utf-8"
@@ -1052,8 +1060,24 @@ async function run() {
         .toArray();
       res.send(payments);
     });
+    // ====== ERROR HANDLING ======
+
+    // 404 Handler
+    app.all("*", (req, res) => {
+      res.status(404).send({ message: "Route Not Found" });
+    });
+
+    // Global Error Handler
+    app.use((err, req, res, next) => {
+      console.error("Global Error:", err);
+      res.status(err.status || 500).send({ 
+        message: err.message || "Internal Server Error",
+        error: process.env.NODE_ENV === "development" ? err : {}
+      });
+    });
+
   } catch (err) {
-    console.error("Server Error:", err);
+    console.error("Server Startup Error:", err);
   }
 }
 
