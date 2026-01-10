@@ -576,6 +576,107 @@ async function run() {
       }
     });
 
+    // ====== COUPONS ======
+    const couponCollection = db.collection("coupons");
+
+    // Create Coupon (Admin Only)
+    app.post("/coupons", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const { code, discountType, amount, expiryDate } = req.body;
+        const coupon = {
+          code: code.toUpperCase(),
+          discountType,
+          amount: parseFloat(amount),
+          expiryDate: new Date(expiryDate),
+          isActive: true,
+          createdAt: new Date(),
+        };
+
+        const existing = await couponCollection.findOne({ code: coupon.code });
+        if (existing) {
+          return res.status(400).send({ message: "Coupon code already exists!" });
+        }
+
+        const result = await couponCollection.insertOne(coupon);
+        res.send(result);
+      } catch (error) {
+        console.error("Error creating coupon:", error);
+        res.status(500).send({ message: "Failed to create coupon" });
+      }
+    });
+
+    // Get All Coupons (Admin Only)
+    app.get("/coupons", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const coupons = await couponCollection
+          .find()
+          .sort({ createdAt: -1 })
+          .toArray();
+        res.send(coupons);
+      } catch (error) {
+        console.error("Error fetching coupons:", error);
+        res.status(500).send({ message: "Failed to fetch coupons" });
+      }
+    });
+
+    // Delete Coupon (Admin Only)
+    app.delete("/coupons/:id", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const id = req.params.id;
+        const result = await couponCollection.deleteOne({ _id: new ObjectId(id) });
+        res.send(result);
+      } catch (error) {
+        console.error("Error deleting coupon:", error);
+        res.status(500).send({ message: "Failed to delete coupon" });
+      }
+    });
+
+    // Validate Coupon (Public/User)
+    app.post("/coupons/validate", async (req, res) => {
+      try {
+        const { code, serviceCost } = req.body;
+        const coupon = await couponCollection.findOne({
+          code: code.toUpperCase(),
+          isActive: true,
+        });
+
+        if (!coupon) {
+          return res.status(404).send({ message: "Invalid coupon code" });
+        }
+
+        const now = new Date();
+        const expiry = new Date(coupon.expiryDate);
+
+        if (now > expiry) {
+          return res.status(400).send({ message: "Coupon has expired" });
+        }
+
+        // Calculate discount
+        let discountAmount = 0;
+        if (coupon.discountType === "percent") {
+          discountAmount = (serviceCost * coupon.amount) / 100;
+        } else {
+          discountAmount = coupon.amount;
+        }
+
+        // Ensure discount doesn't exceed cost (basic protection)
+        if (discountAmount > serviceCost) {
+            discountAmount = serviceCost;
+        }
+
+        res.send({
+          success: true,
+          discountAmount: discountAmount,
+          code: coupon.code,
+          type: coupon.discountType,
+          value: coupon.amount
+        });
+      } catch (error) {
+        console.error("Error validating coupon:", error);
+        res.status(500).send({ message: "Failed to validate coupon" });
+      }
+    });
+
     //  GET PAYMENTS
 
     app.get("/payments", verifyFBToken, async (req, res) => {
