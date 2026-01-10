@@ -4,6 +4,7 @@ require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const admin = require("firebase-admin");
+const { sendSMS } = require("./utils/smsSender");
 
 const app = express();
 const port = process.env.PORT || 4000;
@@ -272,6 +273,18 @@ async function run() {
       booking.createdAt = new Date();
 
       const result = await bookingsCollection.insertOne(booking);
+
+      // Send SMS Notification
+      if (booking.userEmail) {
+        // Assuming we have a phone number in the user profile or booking data.
+        // For now, mocking with a placeholder or if booking has phone.
+        const phone = booking.phone || "01700000000"; 
+        await sendSMS(
+           phone, 
+           `Dear ${booking.userName}, your booking for ${booking.service_name} on ${booking.date} at ${booking.time} is placed successfully!`
+        );
+      }
+
       res.send(result);
     });
 
@@ -350,6 +363,19 @@ async function run() {
             decoratorQuery,
             decoratorUpdatedDoc
           );
+        }
+
+        // Send SMS on Status Change
+        if (status === "planning" || status === "completed") {
+            const bookingDoc = await bookingsCollection.findOne(query);
+            if (bookingDoc && bookingDoc.userEmail) {
+                const phone = bookingDoc.phone || "01700000000";
+                const msg = status === "planning" 
+                    ? `Good news! A decorator has been assigned to your project: ${bookingDoc.service_name}.`
+                    : `Your project ${bookingDoc.service_name} is marked as COMPLETED! Thank you for choosing LuxePlan.`;
+                
+                await sendSMS(phone, msg);
+            }
         }
 
         res.send({ success: true, result });
