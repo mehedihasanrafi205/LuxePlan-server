@@ -703,6 +703,40 @@ async function run() {
       }
     });
 
+    // ====== AI RECOMMENDATION SYSTEM (Available for Admin) ======
+    app.post("/decorators/recommend", verifyFBToken, verifyAdmin, async (req, res) => {
+        try {
+            const { category, date } = req.body;
+            
+            // 1. Find decorators with matching specialty
+            // 2. Filter by availability (status="available") (Simplistic Rule)
+            // 3. Sort by Rating (desc)
+            
+            // Note: In a real system, we would check booking conflicts for the specific date.
+            // For now, we use the "workStatus" field and specialty matching.
+            
+            let query = { 
+                workStatus: "available",
+            };
+
+            if (category) {
+                // If category is provided, match specialty (case-insensitive regex)
+                query.specialty = { $regex: category, $options: "i" };
+            }
+
+            const recommended = await decoratorCollection
+                .find(query)
+                .sort({ rating: -1 }) // Highest rated first
+                .limit(3) // Top 3
+                .toArray();
+
+            res.send(recommended);
+        } catch (error) {
+            console.error("Recommendation Error:", error);
+            res.status(500).send({ message: "Failed to get recommendations" });
+        }
+    });
+
     //  GET PAYMENTS
 
     app.get("/payments", verifyFBToken, async (req, res) => {
