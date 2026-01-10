@@ -1,21 +1,23 @@
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
-const express = require("express");
-const cors = require("cors");
-require("dotenv").config();
-const { ObjectId } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-const { sendSMS } = require("./utils/smsSender"); 
-const { connectDB, getDb } = require("./config/db");
-const { verifyFBToken } = require("./middlewares/authMiddleware");
-const { verifyAdmin, verifyDecorator } = require("./middlewares/roleMiddleware");
-
-// Controllers
-const userController = require("./controllers/userController");
+const admin = require("firebase-admin");
+const { sendSMS } = require("./utils/smsSender");
 
 const app = express();
 const port = process.env.PORT || 4000;
+
+// Firebase Admin setup
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+  "utf-8"
+);
+const serviceAccount = JSON.parse(decoded);
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
 // Middleware
 app.use(express.json());
@@ -26,21 +28,134 @@ app.use(
   })
 );
 
+// JWT Middleware
+const verifyFBToken = async (req, res, next) => {
+  const token = req?.headers?.authorization?.split(" ")[1];
+  if (!token) return res.status(401).send({ message: "Unauthorized Access!" });
+
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+    req.tokenEmail = decoded.email;
+    next();
+  } catch (err) {
+    console.error("Firebase verify error:", err);
+    return res.status(401).send({ message: "Unauthorized Access!", err });
+  }
+};
+
+// MongoDB connection
+const client = new MongoClient(process.env.URI, {
+  serverApi: { version: ServerApiVersion.v1 },
+});
+
 async function run() {
   try {
-    // Connect DB
-    await connectDB();
-    
-    // ====== USERS ======
-    app.get("/users", verifyFBToken, verifyAdmin, userController.getUsers);
-    app.post("/users", userController.createUser);
-    app.patch("/users/:id", verifyFBToken, verifyAdmin, userController.updateUserRole);
-    app.get("/user/role", verifyFBToken, userController.getUserRole);
-    
-    // Remaining routes (To be refactored)
-    
-    // ====== SERVICES ======
+    const db = client.db("LuxePlan");
+    const usersCollection = db.collection("users");
+    const serviceCollection = db.collection("service");
+    const bookingsCollection = db.collection("bookings");
+    const paymentCollection = db.collection("payments");
+    const decoratorCollection = db.collection("decorator");
 
+    console.log("Connected to MongoDB!");
+
+    // Role Middleware //
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.tokenEmail;
+      if (!email)
+        return res.status(401).send({ message: "Unauthorized Access!" });
+
+      const user = await usersCollection.findOne({ email });
+
+      if (user.role !== "admin") {
+        return res
+          .status(403)
+          .send({ message: "Admin only actions", role: user?.role });
+      }
+
+      next();
+    };
+    const verifyDecorator = async (req, res, next) => {
+      const email = req.tokenEmail;
+      if (!email)
+        return res.status(401).send({ message: "Unauthorized Access!" });
+
+      const user = await usersCollection.findOne({ email });
+
+      if (user.role !== "decorator") {
+        return res
+          .status(403)
+          .send({ message: "Decorators only actions", role: user?.role });
+      }
+
+      next();
+    };
+
+    // ====== USERS ======
+
+    app.get("/users", verifyFBToken, verifyAdmin, async (req, res) => {
+      const adminEmail = req.tokenEmail;
+
+      const page = parseInt(req.query.page) || 1;
+      const size = parseInt(req.query.size) || 9;
+      const skip = (page - 1) * size;
+
+      const query = { email: { $ne: adminEmail } };
+
+      try {
+        const count = await usersCollection.countDocuments(query);
+
+        const users = await usersCollection
+          .find(query)
+          .skip(skip)
+          .limit(size)
+          .toArray();
+
+        res.send({ users, count });
+      } catch (error) {
+        console.error("Error fetching users:", error);
+        res.status(500).send({ message: "Failed to fetch users" });
+      }
+    });
+
+    app.post("/users", async (req, res) => {
+      const userData = req.body;
+      const now = new Date().toISOString();
+      userData.createdAt = now;
+      userData.lastLogin = now;
+      userData.role = "client";
+
+      const query = { email: userData.email };
+      const alreadyExist = await usersCollection.findOne(query);
+
+      if (alreadyExist) {
+        const result = await usersCollection.updateOne(query, {
+          $set: { lastLogin: now },
+        });
+        return res.send(result);
+      }
+
+      const result = await usersCollection.insertOne(userData);
+      res.send(result);
+    });
+
+    app.patch("/users/:id", verifyFBToken, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const { role } = req.body;
+
+      const filter = { _id: new ObjectId(id) };
+      const update = { $set: { role: role } };
+
+      const result = await usersCollection.updateOne(filter, update);
+      res.send(result);
+    });
+
+    app.get("/user/role", verifyFBToken, async (req, res) => {
+      const user = await usersCollection.findOne({ email: req.tokenEmail });
+      res.send({ role: user?.role || "client" });
+    });
+
+    // ====== SERVICES ======
 
     app.get("/services", async (req, res) => {
       const { search, category, minBudget, maxBudget } = req.query;
