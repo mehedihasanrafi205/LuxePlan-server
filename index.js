@@ -166,7 +166,7 @@ async function run() {
     // ====== SERVICES ======
 
     app.get("/services", async (req, res) => {
-      const { search, category, minBudget, maxBudget } = req.query;
+      const { search, category, minBudget, maxBudget, sort } = req.query;
 
       const page = parseInt(req.query.page) || 1;
       const size = parseInt(req.query.size) || 9;
@@ -188,11 +188,18 @@ async function run() {
         if (maxBudget) query.cost.$lte = parseFloat(maxBudget);
       }
 
+      let sortOptions = {};
+      if (sort === "price_asc") sortOptions = { cost: 1 };
+      else if (sort === "price_desc") sortOptions = { cost: -1 };
+      else if (sort === "rating_desc") sortOptions = { ratings: -1 };
+      else sortOptions = { _id: -1 }; // Default: Newest
+
       try {
         const count = await serviceCollection.countDocuments(query);
 
         const services = await serviceCollection
           .find(query)
+          .sort(sortOptions)
           .skip(skip)
           .limit(size)
           .toArray();
