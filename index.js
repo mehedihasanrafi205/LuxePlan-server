@@ -976,7 +976,7 @@ async function run() {
             {
               $group: {
                 _id: "$service_name",
-                totalRevenue: { $sum: "$amount" },
+                totalRevenue: { $sum: "$cost" },
                 count: { $sum: 1 },
               },
             },
@@ -992,6 +992,65 @@ async function run() {
           res.status(500).send({ error: "Failed to fetch revenue by service" });
         }
       }
+    );
+
+    // NEW: Monthly Stats for Analytics Chart
+    app.get(
+        "/dashboard/admin/monthly-stats",
+        verifyFBToken,
+        verifyAdmin,
+        async (req, res) => {
+            try {
+                // Aggregation to get monthly revenue and booking counts
+                // We'll use booking createdAt date for grouping
+                const pipeline = [
+                    {
+                        $project: {
+                            createdAt: { $toDate: "$createdAt" }, // Ensure it's a date object
+                            cost: 1,
+                            paymentStatus: 1
+                        }
+                    },
+                    {
+                        $group: {
+                            _id: { 
+                                year: { $year: "$createdAt" }, 
+                                month: { $month: "$createdAt" } 
+                            },
+                            totalBookings: { $sum: 1 },
+                            revenue: { 
+                                $sum: { 
+                                    $cond: [ { $eq: ["$paymentStatus", "paid"] }, "$cost", 0 ] 
+                                } 
+                            }
+                        }
+                    },
+                    { 
+                        $sort: { "_id.year": 1, "_id.month": 1 } 
+                    },
+                    { $limit: 12 } // Last 12 periods
+                ];
+
+                const result = await bookingsCollection.aggregate(pipeline).toArray();
+                
+                // Format for frontend (e.g., "Jan 2024")
+                const formattedStats = result.map(item => {
+                    const date = new Date(item._id.year, item._id.month - 1);
+                    return {
+                        name: date.toLocaleString('default', { month: 'short' }),
+                        fullDate: `${item._id.year}-${item._id.month}`,
+                        bookings: item.totalBookings,
+                        revenue: item.revenue
+                    };
+                });
+
+                res.send(formattedStats);
+
+            } catch (err) {
+                console.error("Monthly stats error:", err);
+                res.status(500).send({ error: "Failed to fetch monthly stats" });
+            }
+        }
     );
     // Decorator assigned projects
     app.get(
@@ -1049,6 +1108,93 @@ async function run() {
       }
     );
 
+    // NEW: Activity Stats for "Activity Overview" Widget
+    app.get("/dashboard/admin/activity-stats", verifyFBToken, verifyAdmin, async (req, res) => {
+        try {
+            const { range = '12w' } = req.query;
+            let dateFormat;
+            let limit;
+            const now = new Date();
+            let startDate = new Date();
+
+            // Configure aggregation based on range
+            if (range === '7d') {
+                dateFormat = "%Y-%m-%d"; // Daily
+                startDate.setDate(now.getDate() - 7);
+                limit = 7;
+            } else if (range === '12w') {
+                dateFormat = "%Y-W%U"; // Weekly
+                startDate.setDate(now.getDate() - (7 * 12));
+                limit = 12;
+            } else if (range === '12m') {
+                dateFormat = "%Y-%m"; // Monthly
+                startDate.setMonth(now.getMonth() - 12);
+                limit = 12;
+            } else {
+                // Default 12w
+                 dateFormat = "%Y-W%U";
+                 startDate.setDate(now.getDate() - (7 * 12));
+                 limit = 12;
+            }
+
+            const pipeline = [
+                {
+                    $match: {
+                        createdAt: { $gte: startDate } // Filter by date range
+                    }
+                },
+                {
+                    $project: {
+                        createdAt: { $toDate: "$createdAt" },
+                        status: 1
+                    }
+                },
+                {
+                    $group: {
+                        _id: { $dateToString: { format: dateFormat, date: "$createdAt" } },
+                        bookings: { $sum: 1 }, // Total Jobs Posted
+                        assigned: { 
+                            $sum: { 
+                                $cond: [
+                                    { $in: ["$status", ["assigned", "working", "completed"]] }, 
+                                    1, 
+                                    0 
+                                ] 
+                            } 
+                        }, // Tasks Accepted equivalent
+                        completed: {
+                            $sum: {
+                                $cond: [ { $eq: ["$status", "completed"] }, 1, 0 ]
+                            }
+                        } // Platform Activity equivalent
+                    }
+                },
+                { $sort: { _id: 1 } }
+            ];
+
+            const result = await bookingsCollection.aggregate(pipeline).toArray();
+
+            // Fill in gaps? For simplicity, we send existing data points.
+            // In a production app, we would fill missing dates with 0.
+            
+            // Calculate totals for the summary cards
+            const totals = result.reduce((acc, curr) => ({
+                bookings: acc.bookings + curr.bookings,
+                assigned: acc.assigned + curr.assigned,
+                completed: acc.completed + curr.completed
+            }), { bookings: 0, assigned: 0, completed: 0 });
+
+            res.send({ 
+                timeline: result, 
+                totals 
+            });
+
+        } catch (err) {
+            console.error("Activity Stats Error:", err);
+            res.status(500).send({ message: "Failed to fetch activity stats" });
+        }
+    });
+
     // user
     app.get("/dashboard/user/bookings", verifyFBToken, async (req, res) => {
       const email = req.tokenEmail;
@@ -1066,6 +1212,87 @@ async function run() {
         .sort({ paidAt: -1 })
         .toArray();
       res.send(payments);
+    });
+
+    // NEW: User Monthly Spending Chart
+    app.get("/dashboard/user/monthly-spending", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.tokenEmail;
+        const pipeline = [
+          { $match: { customer_email: email, paidAt: { $exists: true } } },
+          {
+             $project: {
+                paidAt: { $toDate: "$paidAt" },
+                amount: 1
+             }
+          },
+          {
+             $group: {
+                _id: { 
+                    year: { $year: "$paidAt" }, 
+                    month: { $month: "$paidAt" } 
+                },
+                spending: { $sum: "$amount" }
+             }
+          },
+          { $sort: { "_id.year": 1, "_id.month": 1 } },
+          { $limit: 12 }
+        ];
+
+        const result = await paymentCollection.aggregate(pipeline).toArray();
+        const formatted = result.map(item => {
+             const date = new Date(item._id.year, item._id.month - 1);
+             return {
+                 name: date.toLocaleString('default', { month: 'short' }),
+                 spending: item.spending
+             };
+        });
+        res.send(formatted);
+      } catch (err) {
+        console.error("User spending chart error:", err);
+        res.status(500).send({ error: "Failed to fetch spending data" });
+      }
+    });
+
+    // NEW: Decorator Monthly Earnings Chart
+    app.get("/dashboard/decorator/monthly-earnings", verifyFBToken, verifyDecorator, async (req, res) => {
+      try {
+        const email = req.tokenEmail;
+        // Use paid bookings to calculate earnings history
+        const pipeline = [
+          { $match: { decoratorEmail: email, paymentStatus: "paid" } },
+          {
+             $project: {
+                date: { $toDate: "$date" }, // Use scheduled date or createdAt
+                cost: 1
+             }
+          },
+          {
+             $group: {
+                _id: { 
+                    year: { $year: "$date" }, 
+                    month: { $month: "$date" } 
+                },
+                earnings: { $sum: "$cost" }
+             }
+          },
+          { $sort: { "_id.year": 1, "_id.month": 1 } },
+          { $limit: 12 }
+        ];
+
+        const result = await bookingsCollection.aggregate(pipeline).toArray();
+        const formatted = result.map(item => {
+             const date = new Date(item._id.year, item._id.month - 1);
+             return {
+                 name: date.toLocaleString('default', { month: 'short' }),
+                 earnings: item.earnings
+             };
+        });
+        res.send(formatted);
+      } catch (err) {
+        console.error("Decorator earnings chart error:", err);
+        res.status(500).send({ error: "Failed to fetch earnings history" });
+      }
     });
     // ====== ERROR HANDLING ======
 
